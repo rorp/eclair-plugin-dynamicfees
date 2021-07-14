@@ -19,12 +19,16 @@ package fr.acinq.dynamicfees.app
 import akka.actor.Props
 import com.typesafe.config.{Config, ConfigFactory}
 import fr.acinq.dynamicfees.app.FeeAdjuster.{DynamicFeeRow, DynamicFeesBreakdown}
-import fr.acinq.eclair.{Kit, Plugin, Setup, ShortChannelId}
+import fr.acinq.eclair.{Kit, Plugin, PluginParams, ShortChannelId, Setup}
 import grizzled.slf4j.Logging
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 class DynamicFees extends Plugin with Logging {
+
+  override def params: PluginParams = new PluginParams {
+    override def name: String = "DynamicFees"
+  }
 
   val fallbackConf = ConfigFactory.parseString(
     """
