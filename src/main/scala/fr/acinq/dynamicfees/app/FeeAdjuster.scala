@@ -22,7 +22,7 @@ import fr.acinq.bitcoin.ByteVector32
 import fr.acinq.dynamicfees.app.FeeAdjuster.DynamicFeesBreakdown
 import fr.acinq.eclair.channel._
 import fr.acinq.eclair.payment.{ChannelPaymentRelayed, PaymentRelayed, TrampolinePaymentRelayed}
-import fr.acinq.eclair.wire.ChannelUpdate
+import fr.acinq.eclair.wire.protocol.ChannelUpdate
 import fr.acinq.eclair.{EclairImpl, Kit, ShortChannelId}
 
 import scala.concurrent.Future
@@ -38,7 +38,7 @@ class FeeAdjuster(kit: Kit, dynamicFees: DynamicFeesBreakdown) extends Actor wit
   system.eventStream.subscribe(self, classOf[PaymentRelayed])
 
   override def receive: Receive = {
-    case TrampolinePaymentRelayed(paymentHash, incoming, outgoing, _) =>
+    case TrampolinePaymentRelayed(paymentHash, incoming, outgoing, _, _, _) =>
       log.debug(s"computing new dynamic fees for trampoline payment_hash=$paymentHash")
       val channels = incoming.map(_.channelId) ++ outgoing.map(_.channelId)
       updateFees(channels)
@@ -63,7 +63,7 @@ class FeeAdjuster(kit: Kit, dynamicFees: DynamicFeesBreakdown) extends Actor wit
             log.debug(s"not updating fees for channelId=${channel.commitments.channelId}")
           case Some(feeProp) =>
             log.info(s"updating feeProportional for channelId=${channel.commitments.channelId} oldFee=${channel.channelUpdate.feeProportionalMillionths} newFee=$feeProp")
-            eclair.updateRelayFee(Left(channel.commitments.channelId), kit.nodeParams.feeBase, feeProp)
+            eclair.updateRelayFee(List(Left(channel.commitments.channelId)), kit.nodeParams.feeBase, feeProp)
         }
       }
     }
