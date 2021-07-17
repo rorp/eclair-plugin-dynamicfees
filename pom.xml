@@ -181,18 +181,6 @@
             <version>0.6.1-SNAPSHOT</version>
         </dependency>
         <dependency>
-            <groupId>fr.acinq.eclair</groupId>
-            <artifactId>eclair-core_2.13</artifactId>
-            <type>test-jar</type>
-            <version>0.6.1-SNAPSHOT</version>
-        </dependency>
-        <dependency>
-            <groupId>fr.acinq.eclair</groupId>
-            <artifactId>eclair-node_2.13</artifactId>
-            <type>test-jar</type>
-            <version>0.6.1-SNAPSHOT</version>
-        </dependency>
-        <dependency>
             <groupId>org.scalatest</groupId>
             <artifactId>scalatest_${scala.version.short}</artifactId>
             <version>3.3.0-SNAP2</version>
