@@ -173,31 +173,14 @@
         <dependency>
             <groupId>fr.acinq.eclair</groupId>
             <artifactId>eclair-core_2.13</artifactId>
-            <version>0.6.1-SNAPSHOT</version>
+            <version>0.6.2-SNAPSHOT</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>fr.acinq.eclair</groupId>
             <artifactId>eclair-node_2.13</artifactId>
             <version>0.6.1-SNAPSHOT</version>
-        </dependency>
-        <dependency>
-            <groupId>fr.acinq.eclair</groupId>
-            <artifactId>eclair-core_2.13</artifactId>
-            <version>0.6.1-SNAPSHOT</version>
-            <classifier>tests</classifier>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.scalatest</groupId>
-            <artifactId>scalatest_${scala.version.short}</artifactId>
-            <version>3.3.0-SNAP2</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.typesafe.akka</groupId>
-            <artifactId>akka-testkit_${scala.version.short}</artifactId>
-            <version>2.6.10</version>
-            <scope>test</scope>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 

@@ -21,12 +21,14 @@ import akka.util.Timeout
 import fr.acinq.bitcoin.ByteVector32
 import fr.acinq.dynamicfees.app.FeeAdjuster.DynamicFeesBreakdown
 import fr.acinq.eclair.channel._
-import fr.acinq.eclair.payment.{ChannelPaymentRelayed, PaymentRelayed, TrampolinePaymentRelayed}
+import fr.acinq.eclair.db.DbEventHandler.ChannelEvent
+import fr.acinq.eclair.payment.{ChannelPaymentRelayed, PaymentEvent, PaymentRelayed, TrampolinePaymentRelayed}
 import fr.acinq.eclair.wire.protocol.ChannelUpdate
 import fr.acinq.eclair.{EclairImpl, Kit, ShortChannelId}
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
+import scala.util.{Failure, Success}
 
 class FeeAdjuster(kit: Kit, dynamicFees: DynamicFeesBreakdown) extends Actor with DiagnosticActorLogging {
 
@@ -35,18 +37,21 @@ class FeeAdjuster(kit: Kit, dynamicFees: DynamicFeesBreakdown) extends Actor wit
   implicit val askTimeout: Timeout = Timeout(30 seconds)
   val eclair = new EclairImpl(kit)
 
-  system.eventStream.subscribe(self, classOf[PaymentRelayed])
-
+  system.eventStream.subscribe(self, classOf[PaymentEvent])
+  //override def preStart(): Unit = {
+  //  log.info(s"actor runs")
+  //}
   override def receive: Receive = {
-    case TrampolinePaymentRelayed(paymentHash, incoming, outgoing, _, _, _) =>
-      log.debug(s"computing new dynamic fees for trampoline payment_hash=$paymentHash")
-      val channels = incoming.map(_.channelId) ++ outgoing.map(_.channelId)
-      updateFees(channels)
-
-    case ChannelPaymentRelayed(_, _, paymentHash, fromChannelId, toChannelId, _) =>
-      log.debug(s"computing new dynamic fees for relayed payment_hash=$paymentHash")
-      val channels = fromChannelId :: toChannelId :: Nil
-      updateFees(channels)
+    case e: PaymentRelayed => e match {
+        case TrampolinePaymentRelayed(paymentHash, incoming, outgoing, _, _, _) =>
+          log.debug(s"computing new dynamic fees for trampoline payment_hash=$paymentHash")
+          val channels = incoming.map(_.channelId) ++ outgoing.map(_.channelId)
+          updateFees(channels)
+        case ChannelPaymentRelayed(_, _, paymentHash, fromChannelId, toChannelId, _) =>
+          log.debug(s"computing new dynamic fees for relayed payment_hash=$paymentHash")
+          val channels = fromChannelId :: toChannelId :: Nil
+          updateFees(channels)
+      }
   }
 
   /**
@@ -63,7 +68,9 @@ class FeeAdjuster(kit: Kit, dynamicFees: DynamicFeesBreakdown) extends Actor wit
             log.debug(s"not updating fees for channelId=${channel.commitments.channelId}")
           case Some(feeProp) =>
             log.info(s"updating feeProportional for channelId=${channel.commitments.channelId} oldFee=${channel.channelUpdate.feeProportionalMillionths} newFee=$feeProp")
-            eclair.updateRelayFee(List(Left(channel.commitments.channelId)), kit.nodeParams.feeBase, feeProp)
+            eclair.updateRelayFee(List(channel.commitments.localNodeId, channel.commitments.remoteNodeId),
+              kit.nodeParams.relayParams.publicChannelFees.feeBase,
+              kit.nodeParams.relayParams.publicChannelFees.feeProportionalMillionths)
         }
       }
     }
@@ -104,7 +111,7 @@ class FeeAdjuster(kit: Kit, dynamicFees: DynamicFeesBreakdown) extends Actor wit
       1D
     }
 
-    val newFeeProportional = (kit.nodeParams.feeProportionalMillionth * multiplier).toLong
+    val newFeeProportional = (kit.nodeParams.relayParams.publicChannelFees.feeProportionalMillionths * multiplier).toLong
     log.debug(s"prevFeeProportional=${channelUpdate.feeProportionalMillionths} newFeeProportional=$newFeeProportional")
 
     if (channelUpdate.feeProportionalMillionths == newFeeProportional) {

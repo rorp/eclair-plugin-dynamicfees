@@ -26,16 +26,13 @@ import scala.jdk.CollectionConverters._
 
 class DynamicFees extends Plugin with Logging {
 
-  override def params: PluginParams = new PluginParams {
-    override def name: String = "DynamicFees"
-  }
-
   val fallbackConf = ConfigFactory.parseString(
     """
       dynamicfees.whitelist = []
       dynamicfees.blacklist = []
     """
   )
+
   var conf: Config = null
   var dynamicFeesConfiguration: DynamicFeesBreakdown = null
 
@@ -49,27 +46,17 @@ class DynamicFees extends Plugin with Logging {
       whitelist = conf.withFallback(fallbackConf).getStringList("dynamicfees.whitelist").asScala.toList.map(ShortChannelId.apply),
       blacklist = conf.withFallback(fallbackConf).getStringList("dynamicfees.blacklist").asScala.toList.map(ShortChannelId.apply)
     )
-    logger.info(prettyPrint(dynamicFeesConfiguration))
+    logger.info(s"depleted channel: threshold = ${dynamicFeesConfiguration.depleted.threshold} " +
+      s"multiplier = ${dynamicFeesConfiguration.depleted.multiplier}")
+    logger.info(s"saturated channel: threshold = ${dynamicFeesConfiguration.saturated.threshold} " +
+      s"multiplier = ${dynamicFeesConfiguration.saturated.multiplier}")
+    logger.info(s"blacklisted: ${dynamicFeesConfiguration.blacklist.size}")
+    logger.info(s"whitelisted: ${dynamicFeesConfiguration.whitelist.size}")
   }
 
-  def prettyPrint(dfb: DynamicFeesBreakdown) =
-    s"""
-       |+----------------------------------------------------------------------+
-       |                 DYNAMIC FEES PLUGIN CONFIGURATION
-       |
-       |
-       |      depleted channel: threshold = ${dfb.depleted.threshold} multiplier = ${dfb.depleted.multiplier}
-       |
-       |      saturated channel: threshold = ${dfb.saturated.threshold} multiplier = ${dfb.saturated.multiplier}
-       |
-       |      blacklisted: ${dfb.blacklist.size}       whitelisted: ${dfb.whitelist.size}
-       |
-       |
-       |+----------------------------------------------------------------------+
-     """.stripMargin
+  override def onKit(kit: Kit): Unit = kit.system actorOf Props(classOf[FeeAdjuster], kit, dynamicFeesConfiguration)
 
-  override def onKit(kit: Kit): Unit = {
-    kit.system.actorOf(Props(new FeeAdjuster(kit, dynamicFeesConfiguration)))
+  override def params: PluginParams = new PluginParams {
+    override def name: String = "DynamicFees"
   }
-
 }
