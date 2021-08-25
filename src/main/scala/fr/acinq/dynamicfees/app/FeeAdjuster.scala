@@ -22,6 +22,7 @@ import fr.acinq.bitcoin.ByteVector32
 import fr.acinq.dynamicfees.app.FeeAdjuster.DynamicFeesBreakdown
 import fr.acinq.eclair.channel._
 import fr.acinq.eclair.db.DbEventHandler.ChannelEvent
+import fr.acinq.eclair.payment.relay.Relayer.RelayFees
 import fr.acinq.eclair.payment.{ChannelPaymentRelayed, PaymentEvent, PaymentRelayed, TrampolinePaymentRelayed}
 import fr.acinq.eclair.wire.protocol.ChannelUpdate
 import fr.acinq.eclair.{EclairImpl, Kit, ShortChannelId}
@@ -65,12 +66,14 @@ class FeeAdjuster(kit: Kit, dynamicFees: DynamicFeesBreakdown) extends Actor wit
         .foreach { channel =>
         newFeeProportionalForChannel(channel.commitments, channel.channelUpdate) match {
           case None =>
-            log.debug(s"not updating fees for channelId=${channel.commitments.channelId}")
+            log.debug(s"skipping fees update for channelId=${channel.commitments.channelId}")
           case Some(feeProp) =>
             log.info(s"updating feeProportional for channelId=${channel.commitments.channelId} oldFee=${channel.channelUpdate.feeProportionalMillionths} newFee=$feeProp")
             eclair.updateRelayFee(List(channel.commitments.localNodeId, channel.commitments.remoteNodeId),
               kit.nodeParams.relayParams.publicChannelFees.feeBase,
-              kit.nodeParams.relayParams.publicChannelFees.feeProportionalMillionths)
+              feeProp)
+            kit.nodeParams.db.peers.addOrUpdateRelayFees(channel.commitments.remoteNodeId,
+              RelayFees(kit.nodeParams.relayParams.publicChannelFees.feeBase, feeProp))
         }
       }
     }
