@@ -16,10 +16,12 @@
 
 package fr.acinq.dynamicfees.app
 
-import akka.actor.Props
+import akka.actor.typed.SupervisorStrategy
+import akka.actor.typed.scaladsl.Behaviors
+import akka.actor.typed.scaladsl.adapter.ClassicActorSystemOps
 import com.typesafe.config.{Config, ConfigFactory}
 import fr.acinq.dynamicfees.app.FeeAdjuster.{DynamicFeeRow, DynamicFeesBreakdown}
-import fr.acinq.eclair.{Kit, Plugin, PluginParams, ShortChannelId, Setup}
+import fr.acinq.eclair.{Kit, Plugin, PluginParams, Setup, ShortChannelId}
 import grizzled.slf4j.Logging
 
 import scala.jdk.CollectionConverters._
@@ -33,8 +35,8 @@ class DynamicFees extends Plugin with Logging {
     """
   )
 
-  var conf: Config = null
-  var dynamicFeesConfiguration: DynamicFeesBreakdown = null
+  var conf: Config = _
+  var dynamicFeesConfiguration: DynamicFeesBreakdown = _
 
   logger.info("loading DynamicFees plugin")
 
@@ -43,8 +45,8 @@ class DynamicFees extends Plugin with Logging {
     dynamicFeesConfiguration = DynamicFeesBreakdown(
       depleted = DynamicFeeRow(conf.getDouble("dynamicfees.depleted.threshold"), conf.getDouble("dynamicfees.depleted.multiplier")),
       saturated = DynamicFeeRow(conf.getDouble("dynamicfees.saturated.threshold"), conf.getDouble("dynamicfees.saturated.multiplier")),
-      whitelist = conf.withFallback(fallbackConf).getStringList("dynamicfees.whitelist").asScala.toList.map(ShortChannelId.apply),
-      blacklist = conf.withFallback(fallbackConf).getStringList("dynamicfees.blacklist").asScala.toList.map(ShortChannelId.apply)
+      whitelist = conf.withFallback(fallbackConf).getStringList("dynamicfees.whitelist").asScala.toList.map(ShortChannelId.fromCoordinates(_).get),
+      blacklist = conf.withFallback(fallbackConf).getStringList("dynamicfees.blacklist").asScala.toList.map(ShortChannelId.fromCoordinates(_).get)
     )
     logger.info(s"depleted channel: threshold = ${dynamicFeesConfiguration.depleted.threshold} " +
       s"multiplier = ${dynamicFeesConfiguration.depleted.multiplier}")
@@ -54,7 +56,9 @@ class DynamicFees extends Plugin with Logging {
     logger.info(s"whitelisted: ${dynamicFeesConfiguration.whitelist.size}")
   }
 
-  override def onKit(kit: Kit): Unit = kit.system actorOf Props(classOf[FeeAdjuster], kit, dynamicFeesConfiguration)
+  override def onKit(kit: Kit): Unit = {
+    kit.system.spawn(Behaviors.supervise(FeeAdjuster(kit, dynamicFeesConfiguration)).onFailure(SupervisorStrategy.restart), name = "fee-adjuster")
+  }
 
   override def params: PluginParams = new PluginParams {
     override def name: String = "DynamicFees"

@@ -15,8 +15,30 @@ The plugin works by intercepting the relayed payments and creates a new `channel
 transitioning from a state to another (i.e going *balanced* -> *depleted*), the plugin will *ignore* sent/received payments because they are user initiated. The plugin will apply the multiplier only to the `fee_proportional` value of the relay fee and use the **configured value** in `eclair.fee-proportional-millionths` as basepoint for the multiplication. This means that a manually updated relay fee will be overridden by the plugin once there is a relayed payments that make the channel transition to a new state.
 
 ### Installation
-The plugin can be built locally or downloaded from the release page of this repo, it's a fat jar that must be 
-passed as argument to eclair when it's launched, see the [instructions](https://github.com/ACINQ/eclair#plugins).
+The plugin can be built locally, it's a fat jar that must be passed as argument to eclair when it's launched, see the [instructions](https://github.com/ACINQ/eclair#plugins).
+
+First you need to build Eclair
+
+```bash
+git clone https://github.com/ACINQ/eclair.git
+
+cd eclair/
+
+git checkout v0.8.0
+
+mvn install -DskipTests=true
+```
+
+Then build the plugin
+```bash
+git clone https://github.com/rorp/eclair-plugin-dynamicfees.git
+
+cd eclair-plugin-dynamicfees/
+
+mvn package
+```
+
+The last `mvn` command will put the plugin's JAR file into `target` directory.
 
 ### Usage
 Once the plugin is configured and loaded it doesn't need any further input from the user, below there is a breakdown of how the plugin works:
