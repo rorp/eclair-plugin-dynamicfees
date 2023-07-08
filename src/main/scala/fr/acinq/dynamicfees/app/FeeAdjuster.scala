@@ -130,7 +130,7 @@ class FeeAdjuster private(kit: Kit, dynamicFees: DynamicFeesBreakdown, context: 
 
   def getChannelData(channelId: ByteVector32): Future[Option[DATA_NORMAL]] = {
     eclair.channelInfo(Left(channelId)).map {
-      case RES_GET_CHANNEL_INFO(_, _, NORMAL, data: DATA_NORMAL) => Some(data)
+      case RES_GET_CHANNEL_INFO(_, _, _, NORMAL, data: DATA_NORMAL) => Some(data)
       case _ => None
     }
   }
