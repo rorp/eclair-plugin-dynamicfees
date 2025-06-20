@@ -40,11 +40,11 @@ object FeeAdjuster {
   case class DynamicFeeRow(threshold: Double, multiplier: Double)
 
   case class DynamicFeesBreakdown(
-    depleted: DynamicFeeRow,
-    saturated: DynamicFeeRow,
-    whitelist: List[ShortChannelId],
-    blacklist: List[ShortChannelId]
-  ) {
+                                   depleted: DynamicFeeRow,
+                                   saturated: DynamicFeeRow,
+                                   whitelist: List[ShortChannelId],
+                                   blacklist: List[ShortChannelId]
+                                 ) {
     require(!(whitelist.nonEmpty && blacklist.nonEmpty), "cannot use both whitelist and blacklist in dynamicfees plugin configuration")
     require(depleted.threshold > 0 && depleted.threshold < 1, "invalid values for depleted threshold")
     require(saturated.threshold > 0 && saturated.threshold < 1, "invalid values for saturated threshold")
@@ -82,12 +82,12 @@ class FeeAdjuster private(kit: Kit, dynamicFees: DynamicFeesBreakdown, context: 
         val channels = parts.map(_.fromChannelId)
         updateFees(channels)
         Behaviors.same
-      case WrappedPaymentEvent(TrampolinePaymentRelayed(paymentHash, incoming, outgoing, _, _, _)) =>
+      case WrappedPaymentEvent(TrampolinePaymentRelayed(paymentHash, incoming, outgoing, _, _)) =>
         context.log.debug(s"$logMessage$paymentHash")
         val channels = incoming.map(_.channelId) ++ outgoing.map(_.channelId)
         updateFees(channels)
         Behaviors.same
-      case WrappedPaymentEvent(ChannelPaymentRelayed(_, _, paymentHash, fromChannelId, toChannelId, _)) =>
+      case WrappedPaymentEvent(ChannelPaymentRelayed(_, _, paymentHash, fromChannelId, toChannelId, _, _)) =>
         context.log.debug(s"$logMessage$paymentHash")
         val channels = fromChannelId :: toChannelId :: Nil
         updateFees(channels)
@@ -119,13 +119,10 @@ class FeeAdjuster private(kit: Kit, dynamicFees: DynamicFeesBreakdown, context: 
   }
 
   def filterChannel(channel: DATA_NORMAL): Boolean = {
-    channel.shortIds.real.toOption match {
-      case Some(shortChannelId) =>
-        (dynamicFees.whitelist.isEmpty && dynamicFees.blacklist.isEmpty) ||
-          (dynamicFees.whitelist.nonEmpty && dynamicFees.whitelist.contains(shortChannelId)) ||
-          (dynamicFees.blacklist.nonEmpty && !dynamicFees.blacklist.contains(shortChannelId))
-      case None => false
-    }
+    val shortChannelId = channel.channelUpdate.shortChannelId
+    (dynamicFees.whitelist.isEmpty && dynamicFees.blacklist.isEmpty) ||
+      (dynamicFees.whitelist.nonEmpty && dynamicFees.whitelist.contains(shortChannelId)) ||
+      (dynamicFees.blacklist.nonEmpty && !dynamicFees.blacklist.contains(shortChannelId))
   }
 
   def getChannelData(channelId: ByteVector32): Future[Option[DATA_NORMAL]] = {

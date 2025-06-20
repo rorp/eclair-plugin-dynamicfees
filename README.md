@@ -24,7 +24,7 @@ git clone https://github.com/ACINQ/eclair.git
 
 cd eclair/
 
-git checkout v0.9.0
+git checkout v0.12.0
 
 mvn install -DskipTests=true
 ```
