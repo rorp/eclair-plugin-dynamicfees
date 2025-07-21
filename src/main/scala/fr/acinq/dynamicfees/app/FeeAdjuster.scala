@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 ACINQ SAS
+ * Copyright 2019 ACINQ SAS, rorp
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,11 +21,12 @@ import akka.actor.typed.eventstream.EventStream
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.util.Timeout
 import fr.acinq.bitcoin.scalacompat.ByteVector32
-import fr.acinq.dynamicfees.app.FeeAdjuster.{DynamicFeesBreakdown, WrappedPaymentEvent}
+import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
+import fr.acinq.dynamicfees.app.FeeAdjuster.{DynamicFeesConfig, WrappedPaymentEvent, filterChannel, newFeeProportionalForChannel}
 import fr.acinq.eclair.channel._
 import fr.acinq.eclair.payment._
 import fr.acinq.eclair.wire.protocol.ChannelUpdate
-import fr.acinq.eclair.{EclairImpl, Kit, ShortChannelId}
+import fr.acinq.eclair.{EclairImpl, Kit, MilliSatoshi, ShortChannelId}
 import org.slf4j.Logger
 
 import scala.concurrent.duration._
@@ -33,15 +34,22 @@ import scala.concurrent.{ExecutionContext, Future}
 
 object FeeAdjuster {
 
-  trait Command
+  sealed trait FeeType
+
+  case class Multiplier(value: Double) extends FeeType
+
+  case class Amount(value: Long) extends FeeType
+
+  sealed trait Command
 
   case class WrappedPaymentEvent(event: PaymentEvent) extends Command
 
-  case class DynamicFeeRow(threshold: Double, multiplier: Double)
+  case class DynamicFeeRow(threshold: Double, fee: FeeType)
 
   case class DynamicFeesBreakdown(
                                    depleted: DynamicFeeRow,
                                    saturated: DynamicFeeRow,
+                                   feeProportionalMillionths: Option[Long],
                                    whitelist: List[ShortChannelId],
                                    blacklist: List[ShortChannelId]
                                  ) {
@@ -49,18 +57,68 @@ object FeeAdjuster {
     require(depleted.threshold > 0 && depleted.threshold < 1, "invalid values for depleted threshold")
     require(saturated.threshold > 0 && saturated.threshold < 1, "invalid values for saturated threshold")
     require(depleted.threshold < saturated.threshold, "depleted threshold must be smaller than saturated threshold")
-    require(depleted.multiplier > 0 && saturated.multiplier > 0)
+    require(depleted.fee match {
+      case Multiplier(value) => value > 0
+      case Amount(value) => value > 0
+    }, "invalid fee type for depleted threshold")
+    require(saturated.fee match {
+      case Multiplier(value) => value > 0
+      case Amount(value) => value > 0
+    }, "invalid fee type for saturated threshold")
   }
 
-  def apply(kit: Kit, dynamicFees: DynamicFeesBreakdown): Behavior[Command] = {
+  case class DynamicFeesConfig(defaultBreakdown: DynamicFeesBreakdown, perNodeBreakdowns: Map[PublicKey, DynamicFeesBreakdown]) {
+    def apply(nodeId: PublicKey): DynamicFeesBreakdown = perNodeBreakdowns.getOrElse(nodeId, defaultBreakdown)
+  }
+
+  def apply(kit: Kit, dynamicFees: DynamicFeesConfig): Behavior[Command] = {
     Behaviors.setup { context =>
       new FeeAdjuster(kit, dynamicFees, context).waiting
     }
   }
 
+  /**
+   * Computes the updated fee proportional for this channel, the new value is returned only if it's necessary
+   * to update.
+   *
+   * @return
+   */
+  def newFeeProportionalForChannel(dynamicFees: DynamicFeesBreakdown, toLocal: MilliSatoshi, toRemote: MilliSatoshi, channelUpdate: ChannelUpdate, defaultFeeProportionalMillionths: Long, log: Logger): Option[Long] = {
+    val toLocalPercentage = toLocal.toLong.toDouble / (toLocal.toLong + toRemote.toLong)
+
+    val feeRate = dynamicFees.feeProportionalMillionths.getOrElse(defaultFeeProportionalMillionths)
+
+    val newFeeProportional = if (toLocalPercentage < dynamicFees.depleted.threshold) {
+      dynamicFees.depleted.fee match {
+        case Multiplier(multiplier) => (feeRate * multiplier).toLong
+        case Amount(amount) => amount
+      }
+    } else if (toLocalPercentage > dynamicFees.saturated.threshold) {
+      dynamicFees.saturated.fee match {
+        case Multiplier(multiplier) => (feeRate * multiplier).toLong
+        case Amount(amount) => amount
+      }
+    } else {
+      feeRate
+    }
+
+    log.debug(s"prevFeeProportional=${channelUpdate.feeProportionalMillionths} newFeeProportional=$newFeeProportional")
+
+    if (channelUpdate.feeProportionalMillionths == newFeeProportional) {
+      None
+    } else {
+      Some(newFeeProportional)
+    }
+  }
+
+  def filterChannel(shortChannelId: ShortChannelId, dynamicFees: DynamicFeesBreakdown): Boolean = {
+    (dynamicFees.whitelist.isEmpty && dynamicFees.blacklist.isEmpty) ||
+      (dynamicFees.whitelist.nonEmpty && dynamicFees.whitelist.contains(shortChannelId)) ||
+      (dynamicFees.blacklist.nonEmpty && !dynamicFees.blacklist.contains(shortChannelId))
+  }
 }
 
-class FeeAdjuster private(kit: Kit, dynamicFees: DynamicFeesBreakdown, context: ActorContext[FeeAdjuster.Command]) {
+class FeeAdjuster private(kit: Kit, dynamicFees: DynamicFeesConfig, context: ActorContext[FeeAdjuster.Command]) {
 
   private implicit val ec: ExecutionContext = context.executionContext
   private implicit val askTimeout: Timeout = Timeout(30 seconds)
@@ -103,64 +161,27 @@ class FeeAdjuster private(kit: Kit, dynamicFees: DynamicFeesBreakdown, context: 
     val log = context.log
     Future.sequence(channels.map(getChannelData)).map(_.flatten).map { channelData =>
       channelData
-        .filter(filterChannel)
         .foreach { channel =>
-          newFeeProportionalForChannel(channel.commitments, channel.channelUpdate, log) match {
-            case None =>
-              log.debug(s"skipping fees update for channelId=${channel.commitments.channelId}")
-            case Some(feeProp) =>
-              log.info(s"updating feeProportional for channelId=${channel.commitments.channelId} oldFee=${channel.channelUpdate.feeProportionalMillionths} newFee=$feeProp")
-              eclair.updateRelayFee(List(channel.commitments.localNodeId, channel.commitments.remoteNodeId),
-                kit.nodeParams.relayParams.publicChannelFees.feeBase,
-                feeProp)
+          val dynamicFeesBreakdown = dynamicFees(channel.remoteNodeId)
+          if (!filterChannel(channel.channelUpdate.shortChannelId, dynamicFeesBreakdown)) {
+            newFeeProportionalForChannel(dynamicFeesBreakdown, channel.commitments.availableBalanceForSend, channel.commitments.availableBalanceForReceive, channel.channelUpdate, kit.nodeParams.relayParams.publicChannelFees.feeProportionalMillionths, log) match {
+              case None =>
+                log.debug(s"skipping fees update for channelId=${channel.commitments.channelId}")
+              case Some(feeProp) =>
+                log.info(s"updating feeProportional for channelId=${channel.commitments.channelId} remoteNodeId=${channel.commitments.remoteNodeId} oldFee=${channel.channelUpdate.feeProportionalMillionths} newFee=$feeProp")
+                eclair.updateRelayFee(List(channel.commitments.remoteNodeId),
+                  kit.nodeParams.relayParams.publicChannelFees.feeBase,
+                  feeProp)
+            }
           }
         }
     }
-  }
-
-  def filterChannel(channel: DATA_NORMAL): Boolean = {
-    val shortChannelId = channel.channelUpdate.shortChannelId
-    (dynamicFees.whitelist.isEmpty && dynamicFees.blacklist.isEmpty) ||
-      (dynamicFees.whitelist.nonEmpty && dynamicFees.whitelist.contains(shortChannelId)) ||
-      (dynamicFees.blacklist.nonEmpty && !dynamicFees.blacklist.contains(shortChannelId))
   }
 
   def getChannelData(channelId: ByteVector32): Future[Option[DATA_NORMAL]] = {
     eclair.channelInfo(Left(channelId)).map {
       case RES_GET_CHANNEL_INFO(_, _, _, NORMAL, data: DATA_NORMAL) => Some(data)
       case _ => None
-    }
-  }
-
-  /**
-   * Computes the updated fee proportional for this channel, the new value is returned only if it's necessary
-   * to update.
-   *
-   * @return
-   */
-  def newFeeProportionalForChannel(commitments: Commitments, channelUpdate: ChannelUpdate, log: Logger): Option[Long] = {
-    val toLocal = commitments.availableBalanceForSend
-    val toRemote = commitments.availableBalanceForReceive
-    val toLocalPercentage = toLocal.toLong.toDouble / (toLocal.toLong + toRemote.toLong)
-
-    val multiplier = if (toLocalPercentage < dynamicFees.depleted.threshold) {
-      // do depleted update
-      dynamicFees.depleted.multiplier
-    } else if (toLocalPercentage > dynamicFees.saturated.threshold) {
-      // do saturated update
-      dynamicFees.saturated.multiplier
-    } else {
-      // it's balanced, do not apply multiplier
-      1.0
-    }
-
-    val newFeeProportional = (kit.nodeParams.relayParams.publicChannelFees.feeProportionalMillionths * multiplier).toLong
-    log.debug(s"prevFeeProportional=${channelUpdate.feeProportionalMillionths} newFeeProportional=$newFeeProportional")
-
-    if (channelUpdate.feeProportionalMillionths == newFeeProportional) {
-      None
-    } else {
-      Some(newFeeProportional)
     }
   }
 
