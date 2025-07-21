@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 ACINQ SAS
+ * Copyright 2019 ACINQ SAS, rorp
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,11 @@ import akka.actor.typed.SupervisorStrategy
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.adapter.ClassicActorSystemOps
 import com.typesafe.config.{Config, ConfigFactory}
-import fr.acinq.dynamicfees.app.FeeAdjuster.{DynamicFeeRow, DynamicFeesBreakdown}
+import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
+import fr.acinq.dynamicfees.app.FeeAdjuster.DynamicFeesConfig
 import fr.acinq.eclair.{Kit, Plugin, PluginParams, Setup, ShortChannelId}
 import grizzled.slf4j.Logging
+import scodec.bits.ByteVector
 
 import scala.jdk.CollectionConverters._
 
@@ -30,30 +32,27 @@ class DynamicFees extends Plugin with Logging {
 
   val fallbackConf = ConfigFactory.parseString(
     """
-      dynamicfees.whitelist = []
-      dynamicfees.blacklist = []
+      whitelist = []
+      blacklist = []
     """
   )
 
-  var conf: Config = _
-  var dynamicFeesConfiguration: DynamicFeesBreakdown = _
+  var dynamicFeesConfiguration: DynamicFeesConfig = _
 
   logger.info("loading DynamicFees plugin")
 
   override def onSetup(setup: Setup): Unit = {
-    conf = setup.config
-    dynamicFeesConfiguration = DynamicFeesBreakdown(
-      depleted = DynamicFeeRow(conf.getDouble("dynamicfees.depleted.threshold"), conf.getDouble("dynamicfees.depleted.multiplier")),
-      saturated = DynamicFeeRow(conf.getDouble("dynamicfees.saturated.threshold"), conf.getDouble("dynamicfees.saturated.multiplier")),
-      whitelist = conf.withFallback(fallbackConf).getStringList("dynamicfees.whitelist").asScala.toList.map(ShortChannelId.fromCoordinates(_).get),
-      blacklist = conf.withFallback(fallbackConf).getStringList("dynamicfees.blacklist").asScala.toList.map(ShortChannelId.fromCoordinates(_).get)
-    )
-    logger.info(s"depleted channel: threshold = ${dynamicFeesConfiguration.depleted.threshold} " +
-      s"multiplier = ${dynamicFeesConfiguration.depleted.multiplier}")
-    logger.info(s"saturated channel: threshold = ${dynamicFeesConfiguration.saturated.threshold} " +
-      s"multiplier = ${dynamicFeesConfiguration.saturated.multiplier}")
-    logger.info(s"blacklisted: ${dynamicFeesConfiguration.blacklist.size}")
-    logger.info(s"whitelisted: ${dynamicFeesConfiguration.whitelist.size}")
+    dynamicFeesConfiguration = DynamicFees.readConfig(setup.config, fallbackConf)
+    logger.info(s"default depleted channel: threshold = ${dynamicFeesConfiguration.defaultBreakdown.depleted.threshold} fee = ${dynamicFeesConfiguration.defaultBreakdown.depleted.fee}")
+    logger.info(s"default saturated channel: threshold = ${dynamicFeesConfiguration.defaultBreakdown.saturated.threshold} fee = ${dynamicFeesConfiguration.defaultBreakdown.saturated.fee}")
+    logger.info(s"default fee proportional = ${dynamicFeesConfiguration.defaultBreakdown.feeProportionalMillionths.getOrElse(setup.nodeParams.relayParams.publicChannelFees.feeProportionalMillionths)}")
+    dynamicFeesConfiguration.perNodeBreakdowns.foreach { case (pubkey, breakdown) =>
+      logger.info(s"${pubkey.toHex} depleted channel: threshold = ${breakdown.depleted.threshold} fee = ${breakdown.depleted.fee}")
+      logger.info(s"${pubkey.toHex} saturated channel: threshold = ${breakdown.saturated.threshold} fee = ${breakdown.saturated.fee}")
+      logger.info(s"${pubkey.toHex} fee proportional = ${breakdown.feeProportionalMillionths.getOrElse(setup.nodeParams.relayParams.publicChannelFees.feeProportionalMillionths)}")
+    }
+    logger.info(s"blacklisted: ${dynamicFeesConfiguration.defaultBreakdown.blacklist.size}")
+    logger.info(s"whitelisted: ${dynamicFeesConfiguration.defaultBreakdown.whitelist.size}")
   }
 
   override def onKit(kit: Kit): Unit = {
@@ -62,5 +61,60 @@ class DynamicFees extends Plugin with Logging {
 
   override def params: PluginParams = new PluginParams {
     override def name: String = "DynamicFees"
+  }
+
+}
+
+object DynamicFees {
+  /**
+   * Reads a FeeType from the config for the given prefix (e.g., "dynamicfees.depleted").
+   * Supports either a multiplier (Double) or an amount (Long), but not both.
+   * Throws an exception if neither nor both are set.
+   */
+  private def getFeeType(conf: Config, prefix: String): FeeAdjuster.FeeType = {
+    val hasMultiplier = conf.hasPath(s"$prefix.multiplier")
+    val hasAmount = conf.hasPath(s"$prefix.amount")
+    (hasMultiplier, hasAmount) match {
+      case (true, false) => FeeAdjuster.Multiplier(conf.getDouble(s"$prefix.multiplier"))
+      case (false, true) => FeeAdjuster.Amount(conf.getLong(s"$prefix.amount"))
+      case (false, false) =>
+        throw new IllegalArgumentException(s"Config for $prefix must specify either 'multiplier' or 'amount'")
+      case (true, true) =>
+        throw new IllegalArgumentException(s"Config for $prefix must not specify both 'multiplier' and 'amount'")
+    }
+  }
+
+  private def readDynamicFeesBreakdown(conf: Config, fallbackConf: Config): FeeAdjuster.DynamicFeesBreakdown = {
+    FeeAdjuster.DynamicFeesBreakdown(
+      depleted = FeeAdjuster.DynamicFeeRow(
+        conf.getDouble("depleted.threshold"),
+        getFeeType(conf, "depleted")
+      ),
+      saturated = FeeAdjuster.DynamicFeeRow(
+        conf.getDouble("saturated.threshold"),
+        getFeeType(conf, "saturated")
+      ),
+      whitelist = conf.withFallback(fallbackConf).getStringList("whitelist").asScala.toList.map(ShortChannelId.fromCoordinates(_).get),
+      blacklist = conf.withFallback(fallbackConf).getStringList("blacklist").asScala.toList.map(ShortChannelId.fromCoordinates(_).get),
+      feeProportionalMillionths = if (conf.hasPath("fee-proportional-millionths")) Some(conf.getLong("fee-proportional-millionths")) else None
+    )
+  }
+
+  def readConfig(conf: Config, fallbackConf: Config): FeeAdjuster.DynamicFeesConfig = {
+    // Parse the top-level config as the default
+    val defaultFeesBreakdown = readDynamicFeesBreakdown(conf.getConfig("dynamicfees"), fallbackConf)
+
+    // Parse per-node configs if present
+    val perNodeMap =
+      if (conf.hasPath("dynamicfees.per-node")) {
+        val perNodeConfig = conf.getConfig("dynamicfees.per-node")
+        perNodeConfig.root().keySet().asScala.map { key =>
+          val nodeConf = perNodeConfig.getConfig(key).withFallback(conf)
+          val pubKey = PublicKey.fromBin(ByteVector.fromHex(key).get, true)
+          pubKey -> readDynamicFeesBreakdown(nodeConf, fallbackConf)
+        }.toMap
+      } else Map.empty[PublicKey, FeeAdjuster.DynamicFeesBreakdown]
+    // Return the map, with the default under None (or use a special key if needed)
+    FeeAdjuster.DynamicFeesConfig(defaultFeesBreakdown, perNodeMap)
   }
 }
